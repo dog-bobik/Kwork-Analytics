@@ -217,6 +217,7 @@ local_tests/*.private.py
 
 apk-dump/
 .DS_Store
+._*
 local_tests/
 scripts/
 
@@ -228,3 +229,4 @@ frontend/*.tsbuildinfo
 
 # Local recovery copies are never part of a release
 Recovery/
+backups/
