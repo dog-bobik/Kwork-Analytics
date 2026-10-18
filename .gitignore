@@ -221,6 +221,8 @@ local_tests/
 scripts/
 
 # Frontend build artefacts and accidental root npm metadata
+frontend/node_modules/
+frontend/dist/
 frontend/*.tsbuildinfo
 /package-lock.json
 
