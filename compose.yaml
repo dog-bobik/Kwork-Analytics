@@ -1,0 +1,43 @@
+services:
+  postgres:
+    image: postgres:17-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: kwork_analytics
+      POSTGRES_USER: kwork
+      POSTGRES_PASSWORD: kwork
+    volumes:
+      - kwork_postgres:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U kwork -d kwork_analytics"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  backend:
+    build:
+      context: .
+      dockerfile: Dockerfile.backend
+    restart: unless-stopped
+    ports:
+      - "8081:8080"
+    environment:
+      DATABASE_URL: postgresql+asyncpg://kwork:kwork@postgres:5432/kwork_analytics
+      APP_SECRET: kwork-pulse-local-server-secret-change-before-public-deploy
+      SYNC_INTERVAL_SECONDS: 900
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  frontend:
+    build:
+      context: .
+      dockerfile: Dockerfile.frontend
+    restart: unless-stopped
+    ports:
+      - "8080:80"
+    depends_on:
+      - backend
+
+volumes:
+  kwork_postgres:
