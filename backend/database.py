@@ -214,13 +214,147 @@ def snapshot_views(payload: dict[str, Any], resource: str) -> int:
     return int(activity.get("views") or payload.get("views_dirty") or payload.get("views") or 0)
 
 
-async def view_deltas_today(user_id: int, resource: str) -> dict[str, int]:
+def snapshot_number(payload: dict[str, Any], *keys: str) -> int:
+    activity = payload.get("activity") if isinstance(payload.get("activity"), dict) else {}
+    for source in (activity, payload):
+        for key in keys:
+            value = source.get(key)
+            if value not in (None, ""):
+                try:
+                    return int(float(value))
+                except (TypeError, ValueError):
+                    continue
+    return 0
+
+
+def happened_today(value: Any) -> bool:
+    if value in (None, ""):
+        return False
+    try:
+        if isinstance(value, (int, float)) or str(value).replace(".", "", 1).isdigit():
+            raw = float(value)
+            moment = datetime.fromtimestamp(raw / 1000 if raw > 10_000_000_000 else raw, tz=timezone.utc)
+        else:
+            moment = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+            if moment.tzinfo is None:
+                moment = moment.replace(tzinfo=timezone.utc)
+    except (OverflowError, TypeError, ValueError):
+        return False
+    local_zone = ZoneInfo("Asia/Yekaterinburg")
+    return moment.astimezone(local_zone).date() == datetime.now(local_zone).date()
+
+
+async def snapshots_today(user_id: int, resource: str) -> tuple[dict[str, list[dict[str, Any]]], datetime | None, int]:
     local_now = datetime.now(ZoneInfo("Asia/Yekaterinburg"))
     start = local_now.replace(hour=0, minute=0, second=0, microsecond=0).astimezone(timezone.utc)
     async with SessionFactory() as db:
-        rows = (await db.scalars(select(AnalyticsSnapshot).where(AnalyticsSnapshot.user_id == user_id, AnalyticsSnapshot.resource == resource, AnalyticsSnapshot.captured_at >= start).order_by(AnalyticsSnapshot.captured_at))).all()
-    bounds: dict[str, list[int]] = {}
+        rows = (await db.scalars(select(AnalyticsSnapshot).where(
+            AnalyticsSnapshot.user_id == user_id,
+            AnalyticsSnapshot.resource == resource,
+            AnalyticsSnapshot.captured_at >= start,
+        ).order_by(AnalyticsSnapshot.captured_at))).all()
+    grouped: dict[str, list[dict[str, Any]]] = {}
     for row in rows:
-        views = snapshot_views(row.payload, resource)
-        bounds.setdefault(row.external_id, []).append(views)
+        grouped.setdefault(row.external_id, []).append(dict(row.payload))
+    return grouped, rows[0].captured_at if rows else None, len(rows)
+
+
+async def kwork_analytics_today(user_id: int) -> dict[str, Any]:
+    grouped, measured_from, samples = await snapshots_today(user_id, "kworks")
+    items: dict[str, dict[str, int]] = {}
+    for item_id, payloads in grouped.items():
+        first_payload, last_payload = payloads[0], payloads[-1]
+        items[item_id] = {
+            "views": max(snapshot_views(last_payload, "kworks") - snapshot_views(first_payload, "kworks"), 0),
+            "sales": max(snapshot_number(last_payload, "orders", "sales", "orders_count") - snapshot_number(first_payload, "orders", "sales", "orders_count"), 0),
+            "earned": max(snapshot_number(last_payload, "earned", "revenue") - snapshot_number(first_payload, "earned", "revenue"), 0),
+        }
+    return {
+        "views": sum(item["views"] for item in items.values()),
+        "sales": sum(item["sales"] for item in items.values()),
+        "earned": sum(item["earned"] for item in items.values()),
+        "items_with_growth": sum(1 for item in items.values() if item["views"] > 0),
+        "measured_from": measured_from.isoformat() if measured_from else None,
+        "samples": samples,
+        "items": items,
+    }
+
+
+async def offer_analytics_today(user_id: int) -> dict[str, Any]:
+    grouped, measured_from, samples = await snapshots_today(user_id, "offers")
+    sent_today = read_today = ordered_today = 0
+    for payloads in grouped.values():
+        first_payload, last_payload = payloads[0], payloads[-1]
+        sent_today += int(happened_today(last_payload.get("date_create")))
+        read_today += int(not bool(first_payload.get("is_read")) and bool(last_payload.get("is_read")))
+        first_orders = snapshot_number(first_payload.get("market") or {}, "buyer_order_count")
+        last_orders = snapshot_number(last_payload.get("market") or {}, "buyer_order_count")
+        ordered_today += int(last_orders > first_orders)
+    return {
+        "sent": sent_today,
+        "read": read_today,
+        "projects_with_new_orders": ordered_today,
+        "measured_from": measured_from.isoformat() if measured_from else None,
+        "samples": samples,
+    }
+
+
+async def item_analytics_today(user_id: int, resource: str, item_id: str) -> dict[str, Any] | None:
+    local_now = datetime.now(ZoneInfo("Asia/Yekaterinburg"))
+    start = local_now.replace(hour=0, minute=0, second=0, microsecond=0).astimezone(timezone.utc)
+    async with SessionFactory() as db:
+        rows = (await db.scalars(select(AnalyticsSnapshot).where(
+            AnalyticsSnapshot.user_id == user_id,
+            AnalyticsSnapshot.resource == resource,
+            AnalyticsSnapshot.external_id == item_id,
+            AnalyticsSnapshot.captured_at >= start,
+        ).order_by(AnalyticsSnapshot.captured_at))).all()
+    if not rows:
+        return None
+    if resource == "kworks":
+        points = [{
+            "at": row.captured_at.isoformat(),
+            "views": snapshot_views(row.payload, "kworks"),
+            "sales": snapshot_number(row.payload, "orders", "sales", "orders_count"),
+            "earned": snapshot_number(row.payload, "earned", "revenue"),
+        } for row in rows]
+        first_point, last_point = points[0], points[-1]
+        return {
+            "kind": "kwork",
+            "views": max(last_point["views"] - first_point["views"], 0),
+            "sales": max(last_point["sales"] - first_point["sales"], 0),
+            "earned": max(last_point["earned"] - first_point["earned"], 0),
+            "current_views": last_point["views"],
+            "current_sales": last_point["sales"],
+            "points": points,
+            "measured_from": rows[0].captured_at.isoformat(),
+            "measured_to": rows[-1].captured_at.isoformat(),
+        }
+    points = [{
+        "at": row.captured_at.isoformat(),
+        "is_read": bool(row.payload.get("is_read")),
+        "buyer_orders": snapshot_number(row.payload.get("market") or {}, "buyer_order_count"),
+        "competition": snapshot_number(row.payload.get("project") or {}, "offers"),
+        "is_actual": bool(row.payload.get("is_actual")),
+    } for row in rows]
+    first_point, last_point = points[0], points[-1]
+    read_point = next((point for index, point in enumerate(points) if point["is_read"] and (index == 0 or not points[index-1]["is_read"])), None)
+    return {
+        "kind": "offer",
+        "sent_today": happened_today(rows[-1].payload.get("date_create")),
+        "read_today": bool(read_point and not first_point["is_read"]),
+        "read_at": read_point["at"] if read_point and not first_point["is_read"] else None,
+        "new_buyer_orders": max(last_point["buyer_orders"] - first_point["buyer_orders"], 0),
+        "competition_delta": last_point["competition"] - first_point["competition"],
+        "current_competition": last_point["competition"],
+        "is_actual": last_point["is_actual"],
+        "points": points,
+        "measured_from": rows[0].captured_at.isoformat(),
+        "measured_to": rows[-1].captured_at.isoformat(),
+    }
+
+
+async def view_deltas_today(user_id: int, resource: str) -> dict[str, int]:
+    grouped, _, _ = await snapshots_today(user_id, resource)
+    bounds = {item_id: [snapshot_views(payload, resource) for payload in payloads] for item_id, payloads in grouped.items()}
     return {item_id: max(values[-1]-values[0], 0) for item_id, values in bounds.items() if values}

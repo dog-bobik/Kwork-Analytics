@@ -1,7 +1,7 @@
 import unittest
 
 from backend.app import decrypt_token, encrypt_token, summarize
-from backend.database import snapshot_views
+from backend.database import happened_today, snapshot_number, snapshot_views
 
 
 class FastApiBackendTests(unittest.TestCase):
@@ -23,6 +23,14 @@ class FastApiBackendTests(unittest.TestCase):
 
     def test_portfolio_uses_visible_dirty_view_count(self) -> None:
         self.assertEqual(snapshot_views({"views": 3, "views_dirty": 29}, "portfolio"), 29)
+
+    def test_snapshot_number_prefers_activity_metrics(self) -> None:
+        payload = {"orders": 2, "activity": {"orders": "7", "earned": 1250.0}}
+        self.assertEqual(snapshot_number(payload, "orders", "sales"), 7)
+        self.assertEqual(snapshot_number(payload, "earned"), 1250)
+
+    def test_today_parser_rejects_unknown_dates(self) -> None:
+        self.assertFalse(happened_today("not-a-date"))
 
 
 if __name__ == "__main__":

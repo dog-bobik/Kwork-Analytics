@@ -236,16 +236,20 @@ async def logout(response: Response, kwork_pulse_session: str | None = Cookie(de
 @app.get("/api/offers")
 async def offers(user: User = Depends(current_user)) -> dict[str, Any]:
     items = await database.current_items(user.id, "offers")
-    return {"offers": items, "summary": summarize(items), "meta": sync_meta(user)}
+    today = await database.offer_analytics_today(user.id)
+    return {"offers": items, "summary": summarize(items), "today": today, "meta": sync_meta(user)}
 
 
 @app.get("/api/kworks")
 async def kworks(user: User = Depends(current_user)) -> dict[str, Any]:
     items = await database.current_items(user.id, "kworks")
-    deltas = await database.view_deltas_today(user.id, "kworks")
+    today = await database.kwork_analytics_today(user.id)
     for item in items:
-        item["views_today"] = deltas.get(database.external_id(item, "kworks"), 0)
-    return {"kworks": items, "meta": sync_meta(user)}
+        item_today = today["items"].get(database.external_id(item, "kworks"), {})
+        item["today"] = item_today
+        item["views_today"] = item_today.get("views", 0)
+    today.pop("items", None)
+    return {"kworks": items, "today": today, "meta": sync_meta(user)}
 
 
 @app.get("/api/portfolio")
@@ -255,6 +259,16 @@ async def portfolio(user: User = Depends(current_user)) -> dict[str, Any]:
     for item in items:
         item["views_today"] = deltas.get(database.external_id(item, "portfolio"), 0)
     return {"portfolio": items, "meta": sync_meta(user)}
+
+
+@app.get("/api/analytics/{resource}/{item_id}/today")
+async def item_analytics(resource: str, item_id: str, user: User = Depends(current_user)) -> dict[str, Any]:
+    if resource not in {"offers", "kworks"}:
+        raise HTTPException(status_code=404, detail="Аналитика для этого раздела недоступна")
+    analytics = await database.item_analytics_today(user.id, resource, item_id)
+    if analytics is None:
+        raise HTTPException(status_code=404, detail="Сегодня ещё нет снимков для этого объекта")
+    return {"analytics": analytics, "meta": sync_meta(user)}
 
 
 async def profile_response(user: User, username: str) -> dict[str, Any]:
