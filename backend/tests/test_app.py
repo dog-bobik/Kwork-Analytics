@@ -1,7 +1,8 @@
 import unittest
 
 from backend.app import decrypt_token, encrypt_token, summarize
-from backend.database import happened_today, snapshot_number, snapshot_views
+from backend.core.security import hash_password, verify_password
+from backend.services.analytics import happened_today, snapshot_number
 
 
 class FastApiBackendTests(unittest.TestCase):
@@ -21,8 +22,11 @@ class FastApiBackendTests(unittest.TestCase):
         self.assertEqual(result["withOrders"], 1)
         self.assertEqual(result["buyerOrders"], 2)
 
-    def test_portfolio_uses_visible_dirty_view_count(self) -> None:
-        self.assertEqual(snapshot_views({"views": 3, "views_dirty": 29}, "portfolio"), 29)
+    def test_local_password_is_hashed_and_verifiable(self) -> None:
+        encoded = hash_password("correct horse battery staple")
+        self.assertNotIn("correct horse battery staple", encoded)
+        self.assertTrue(verify_password("correct horse battery staple", encoded))
+        self.assertFalse(verify_password("wrong", encoded))
 
     def test_snapshot_number_prefers_activity_metrics(self) -> None:
         payload = {"orders": 2, "activity": {"orders": "7", "earned": 1250.0}}
