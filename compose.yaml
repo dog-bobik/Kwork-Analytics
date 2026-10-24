@@ -24,7 +24,7 @@ services:
     environment:
       DATABASE_URL: postgresql+asyncpg://kwork:kwork@postgres:5432/kwork_analytics
       APP_SECRET: ${APP_SECRET:-kwork-pulse-local-server-secret-change-before-public-deploy}
-      SYNC_INTERVAL_SECONDS: 900
+      SYNC_INTERVAL_SECONDS: 3600
     depends_on:
       postgres:
         condition: service_healthy

@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import asyncio
 import ssl
 import json
 import re
@@ -152,20 +151,6 @@ class KworkClient:
             raise KworkError("Kwork не вернул профиль аккаунта")
         return actor
 
-    async def get_user_by_username(self, username: str) -> dict[str, Any]:
-        clean_username = username.strip()
-        if not clean_username:
-            raise ValueError("Имя пользователя обязательно")
-        payload = await self._request(
-            "/userByUsername",
-            params={"token": await self._get_token()},
-            form={"username": clean_username},
-        )
-        profile = payload.get("response")
-        if not isinstance(profile, dict):
-            raise KworkError("Kwork не вернул профиль пользователя")
-        return profile
-
     async def get_kworks_page(self, user_id: int, page: int = 1) -> dict[str, Any]:
         if page < 1:
             raise ValueError("Номер страницы должен быть не меньше 1")
@@ -192,9 +177,9 @@ class KworkClient:
                     return nested
         return None
 
-    async def get_all_kworks(self) -> list[dict[str, Any]]:
+    async def get_all_kworks(self, actor: dict[str, Any] | None = None) -> list[dict[str, Any]]:
         kworks: list[dict[str, Any]] = []
-        actor = await self.get_actor()
+        actor = actor or await self.get_actor()
         embedded_kworks = self._kworks_from_response(actor.get("kworks")) or []
         user_id = actor.get("id") or actor.get("USERID") or actor.get("user_id")
         if not isinstance(user_id, int):
@@ -225,103 +210,6 @@ class KworkClient:
         kworks.extend(item for item in embedded_kworks if str(item.get("id") or item.get("PID")) not in known_ids)
         return kworks
 
-    async def get_all_user_kworks(self, user_id: int) -> list[dict[str, Any]]:
-        result: list[dict[str, Any]] = []
-        page = 1
-        while True:
-            payload = await self.get_kworks_page(user_id, page)
-            response = payload.get("response")
-            current = self._kworks_from_response(response)
-            if current is None:
-                raise KworkError("Kwork вернул неожиданный список кворков пользователя")
-            result.extend(current)
-            paging = payload.get("paging") or (response.get("paging") if isinstance(response, dict) else None)
-            try:
-                pages = int(paging.get("pages") if isinstance(paging, dict) else 1)
-            except (TypeError, ValueError):
-                pages = 1
-            if not current or page >= pages:
-                return result
-            page += 1
-
-    async def get_portfolio_categories(self, user_id: int) -> list[dict[str, Any]]:
-        """Получить рубрики портфолио вместе с работами пользователя."""
-        payload = await self._request(
-            "/portfolioCategoriesList",
-            params={"token": await self._get_token()},
-            form={"user_id": user_id},
-        )
-        response = payload.get("response")
-        if not isinstance(response, list):
-            raise KworkError("Kwork вернул неожиданный список рубрик портфолио")
-        return [item for item in response if isinstance(item, dict)]
-
-    async def get_portfolio_page(self, user_id: int, category_id: int, page: int = 1) -> dict[str, Any]:
-        if page < 1 or category_id <= 0:
-            raise ValueError("Некорректная страница или рубрика портфолио")
-        return await self._request(
-            "/portfolioList",
-            params={"token": await self._get_token()},
-            form={"user_id": user_id, "category_id": category_id, "page": page},
-        )
-
-    @staticmethod
-    def _portfolio_from_response(response: Any) -> tuple[list[dict[str, Any]], int]:
-        if not isinstance(response, dict):
-            return [], 1
-        raw_items = response.get("portfolio") or response.get("items") or response.get("portfolio_list") or []
-        items = [item for item in raw_items if isinstance(item, dict)] if isinstance(raw_items, list) else []
-        paging = response.get("paging")
-        try:
-            pages = int(paging.get("pages") if isinstance(paging, dict) else 1)
-        except (TypeError, ValueError):
-            pages = 1
-        return items, max(pages, 1)
-
-    async def get_all_user_portfolio(self, user_id: int) -> list[dict[str, Any]]:
-        categories = await self.get_portfolio_categories(user_id)
-        all_category = next((item for item in categories if item.get("id") == 0), None)
-        embedded = (
-            [item for item in all_category.get("portfolio_list", []) if isinstance(item, dict)]
-            if isinstance(all_category, dict) and isinstance(all_category.get("portfolio_list"), list)
-            else []
-        )
-        try:
-            expected_count = int(all_category.get("portfolio_count") if isinstance(all_category, dict) else 0)
-        except (TypeError, ValueError):
-            expected_count = 0
-        category_ids = [item.get("id") for item in categories if isinstance(item.get("id"), int) and item["id"] > 0]
-        if not category_ids or (embedded and (not expected_count or len(embedded) >= expected_count)):
-            return embedded
-
-        result: list[dict[str, Any]] = []
-        known_ids: set[str] = set()
-        for category_id in category_ids:
-            page = 1
-            while True:
-                payload = await self.get_portfolio_page(user_id, category_id, page)
-                current, pages = self._portfolio_from_response(payload.get("response"))
-                for work in current:
-                    item_id = str(work.get("id") or "")
-                    if item_id and item_id not in known_ids:
-                        known_ids.add(item_id)
-                        result.append(work)
-                if not current or page >= pages:
-                    break
-                page += 1
-        return result or embedded
-
-    async def get_all_portfolio(self) -> list[dict[str, Any]]:
-        """Получить все работы портфолио текущего аккаунта без дублей рубрик."""
-        actor = await self.get_actor()
-        raw_user_id = actor.get("id") or actor.get("USERID") or actor.get("user_id")
-        try:
-            user_id = int(raw_user_id)
-        except (TypeError, ValueError) as error:
-            raise KworkError("Kwork не вернул ID аккаунта") from error
-
-        return await self.get_all_user_portfolio(user_id)
-
     async def get_user_reviews_page(self, user_id: int, page: int = 1, review_type: str = "all") -> dict[str, Any]:
         if page < 1 or review_type not in {"all", "positive", "negative"}:
             raise ValueError("Некорректная страница или тип отзывов")
@@ -348,20 +236,6 @@ class KworkClient:
             if not current or page >= pages:
                 return result
             page += 1
-
-    async def get_profile_bundle(self, username: str) -> dict[str, Any]:
-        profile = await self.get_user_by_username(username)
-        raw_user_id = profile.get("id") or profile.get("USERID") or profile.get("user_id")
-        try:
-            user_id = int(raw_user_id)
-        except (TypeError, ValueError) as error:
-            raise KworkError("Kwork не вернул ID профиля") from error
-        kworks, portfolio, reviews = await asyncio.gather(
-            self.get_all_user_kworks(user_id),
-            self.get_all_user_portfolio(user_id),
-            self.get_all_user_reviews(user_id),
-        )
-        return {"profile": profile, "kworks": kworks, "portfolio": portfolio, "reviews": reviews}
 
     @staticmethod
     def _parse_project_state(html: str) -> dict[str, Any]:
@@ -467,7 +341,6 @@ class KworkClient:
                 user, order, kwork = offer.get("user") or {}, offer["order"], offer.get("kwork") or {}
                 user_id = str(offer.get("userId") or "")
                 reviews = (project.get("usersReviewsCounts") or {}).get(user_id, {})
-                portfolio = (project.get("portfolioItems") or {}).get(user_id, [])
                 avatar = str(user.get("avatarSrcSet") or "").split(" ", 1)[0]
                 winners.append({
                     "user_id": int(offer.get("userId") or user.get("id") or 0),
@@ -485,16 +358,6 @@ class KworkClient:
                     "customer_paid": float(order.get("price") or 0),
                     "service_title": kwork.get("gtitle"),
                     "service_url": f"{SITE_BASE_URL}/kwork/{kwork.get('PID')}" if kwork.get("PID") else None,
-                    "portfolio": [
-                        {
-                            "id": item.get("id"),
-                            "title": item.get("title"),
-                            "category": item.get("category"),
-                            "views": int(item.get("views_dirty") or 0),
-                            "image_url": f"https://cdn-edge.kwork.ru/files/portfolio/t0/{item.get('cover')}" if item.get("cover") else None,
-                        }
-                        for item in portfolio[:6] if isinstance(item, dict)
-                    ],
                 })
             if winners:
                 result[int(raw_project_id)] = {"winners": winners}

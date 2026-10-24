@@ -69,35 +69,6 @@ class ClientSecurityTests(unittest.IsolatedAsyncioTestCase):
         client.get_kworks_page = AsyncMock(return_value={"response": [], "paging": {"pages": "1"}})  # type: ignore[method-assign]
         self.assertEqual(await client.get_all_kworks(), [{"id": 9}])
 
-    async def test_collects_portfolio_from_all_category(self) -> None:
-        client = KworkClient(token="session-token")
-        client.get_actor = AsyncMock(return_value={"id": 42})  # type: ignore[method-assign]
-        client.get_portfolio_categories = AsyncMock(  # type: ignore[method-assign]
-            return_value=[
-                {"id": 0, "name": "Все", "portfolio_list": [{"id": 1}, {"id": 2}]},
-                {"id": 37, "name": "Сайты", "portfolio_list": [{"id": 1}]},
-            ]
-        )
-        self.assertEqual(await client.get_all_portfolio(), [{"id": 1}, {"id": 2}])
-
-    async def test_deduplicates_portfolio_without_all_category(self) -> None:
-        client = KworkClient(token="session-token")
-        client.get_actor = AsyncMock(return_value={"id": 42})  # type: ignore[method-assign]
-        client.get_portfolio_categories = AsyncMock(  # type: ignore[method-assign]
-            return_value=[
-                {"id": 0, "portfolio_count": 2, "portfolio_list": [{"id": 1}]},
-                {"id": 37},
-                {"id": 39},
-            ]
-        )
-        client.get_portfolio_page = AsyncMock(  # type: ignore[method-assign]
-            side_effect=[
-                {"response": {"portfolio": [{"id": 1}], "paging": {"pages": 1}}},
-                {"response": {"portfolio": [{"id": 1}, {"id": 2}], "paging": {"pages": 1}}},
-            ]
-        )
-        self.assertEqual(await client.get_all_portfolio(), [{"id": 1}, {"id": 2}])
-
     async def test_collects_all_review_pages(self) -> None:
         client = KworkClient(token="session-token")
         client.get_user_reviews_page = AsyncMock(  # type: ignore[method-assign]
